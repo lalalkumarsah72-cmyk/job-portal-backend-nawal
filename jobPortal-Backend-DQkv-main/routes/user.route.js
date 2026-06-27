@@ -1,5 +1,6 @@
 import express from "express";
 import {
+  googleLogin,
   login,
   logout,
   register,
@@ -10,6 +11,7 @@ import { singleUpload } from "../middleware/multer.js";
 
 const router = express.Router();
 
+router.route("/google-login").post(googleLogin);
 router.route("/register").post(singleUpload, register);
 router.route("/login").post(login);
 router.route("/logout").post(logout);

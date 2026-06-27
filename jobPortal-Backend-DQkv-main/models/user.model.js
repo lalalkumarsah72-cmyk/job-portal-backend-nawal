@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+
 const userSchema = new mongoose.Schema(
   {
     fullname: {
@@ -12,22 +13,25 @@ const userSchema = new mongoose.Schema(
     },
     phoneNumber: {
       type: String,
-      required: true,
+      required: false, // Changed to false for Google OAuth
       unique: true,
+      sparse: true,    // CRITICAL: Prevents duplicate null/undefined index crashes
     },
     password: {
       type: String,
-      required: true,
+      required: false, // Kept false for Google OAuth
     },
     pancard: {
       type: String,
-      required: true,
+      required: false, // Changed to false for Google OAuth
       unique: true,
+      sparse: true,    // CRITICAL
     },
     adharcard: {
       type: String,
-      required: true,
+      required: false, // Changed to false for Google OAuth
       unique: true,
+      sparse: true,    // CRITICAL
     },
     role: {
       type: String,
@@ -56,7 +60,7 @@ const userSchema = new mongoose.Schema(
       },
     },
     embeddings: {
-      type: [Number], // Change from Number to [Number]
+      type: [Number], 
       default: []
     },
   },

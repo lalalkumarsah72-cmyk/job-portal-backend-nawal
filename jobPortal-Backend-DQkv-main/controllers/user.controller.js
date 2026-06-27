@@ -5,13 +5,68 @@ import getDataUri from "../utils/datauri.js";
 import cloudinary from "../utils/cloud.js";
 import axios from "axios";
 import { createRequire } from 'module';
+import { generateFreeEmbeddings } from "../utils/vectorizer.js";
+import { OAuth2Client } from 'google-auth-library';
+
 const require = createRequire(import.meta.url);
 const pdf = require('pdf-parse');
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// IMPORT your vectorizer
-import { generateFreeEmbeddings } from "../utils/vectorizer.js";
+// ==========================================
+// GOOGLE OAUTH LOGIN ENDPOINT
+// ==========================================
+export const googleLogin = async (req, res) => {
+    try {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ message: "Token missing", success: false });
 
-// HELPER: Needs to be inside this file (or imported) to work
+        const ticket = await client.verifyIdToken({
+            idToken: token,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+
+        const { name, email, picture } = ticket.getPayload();
+        let user = await User.findOne({ email });
+
+        if (!user) {
+            // Fixed field mapping to match lowercase "fullname" in your schema
+            user = await User.create({
+                fullname: name, 
+                email,
+                role: "Student", 
+                profile: { profilePhoto: picture }
+            });
+        }
+
+        const appToken = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+
+        return res.status(200)
+            .cookie("token", appToken, { 
+                httpOnly: true, 
+                secure: true, 
+                sameSite: 'None',
+                partitioned: true,
+                maxAge: 24 * 60 * 60 * 1000,
+                path: "/"
+            })
+            .json({
+                message: `Welcome, ${user.fullname}`,
+                user: {
+                    _id: user._id,
+                    fullname: user.fullname,
+                    email: user.email,
+                    role: user.role,
+                    profile: user.profile
+                },
+                success: true
+            });
+    } catch (error) {
+        console.error("Google Verification Error:", error);
+        return res.status(500).json({ message: "Authentication failed", success: false });
+    }
+};
+
+// HELPER: Extract text from uploaded PDF resumes
 const extractTextFromPDF = async (url) => {
   try {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
@@ -23,11 +78,11 @@ const extractTextFromPDF = async (url) => {
   }
 };
 
+// ==========================================
+// TRADITIONAL REGISTRATION ENDPOINT
+// ==========================================
 export const register = async (req, res) => {
   console.log("=== REGISTER ENDPOINT HIT ===");
-  console.log("Body received:", req.body);
-  console.log("File received:", req.file ? req.file.originalname : "NO FILE");
-
   try {
     const { fullname, email, phoneNumber, password, adharcard, pancard, role } = req.body || {};
 
@@ -38,31 +93,24 @@ export const register = async (req, res) => {
       });
     }
 
-    // Check duplicates
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ message: "Email already exists", success: false });
 
     const existingAdhar = await User.findOne({ adharcard });
-    if (existingAdhar) return res.status(400).json({ message: "Aadhaar already exists", success: false });
+    if (existingAdhar) return res.status(400).json({ message: "Identification already linked", success: false });
 
     const existingPan = await User.findOne({ pancard });
-    if (existingPan) return res.status(400).json({ message: "PAN already exists", success: false });
+    if (existingPan) return res.status(400).json({ message: "Tax record already linked", success: false });
 
-    // File upload — optional
     let profilePhotoUrl = null;
     if (req.file) {
-      console.log("Uploading file to Cloudinary...");
       try {
         const fileUri = getDataUri(req.file);
         const cloudResponse = await cloudinary.uploader.upload(fileUri.content);
         profilePhotoUrl = cloudResponse.secure_url;
-        console.log("Cloudinary success:", profilePhotoUrl);
       } catch (cloudErr) {
         console.error("Cloudinary FAILED:", cloudErr.message);
-        // Continue without photo
       }
-    } else {
-      console.log("No profile photo uploaded");
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -80,22 +128,22 @@ export const register = async (req, res) => {
       },
     });
 
-    console.log("User created:", newUser.email);
-
     return res.status(201).json({
       message: `Account created successfully for ${fullname}`,
       success: true,
     });
   } catch (error) {
-    console.error("REGISTER CRASH:", error.message, error.stack);
+    console.error("REGISTER CRASH:", error.message);
     return res.status(500).json({
       message: "Server error during registration",
-      error: error.message,
       success: false,
     });
   }
 };
 
+// ==========================================
+// TRADITIONAL LOGIN ENDPOINT
+// ==========================================
 export const login = async (req, res) => {
   try {
     const { email, password, role } = req.body;
@@ -123,13 +171,11 @@ export const login = async (req, res) => {
       profile: user.profile,
     };
 
-    console.log("Setting cookie for user:", user.email);
-
     res.cookie("token", token, {
       httpOnly: true,
-      secure: true,                // false for HTTP (EC2)
+      secure: true,                
       sameSite: "None",
-      partitioned: true,// works on HTTP
+      partitioned: true,
       maxAge: 24 * 60 * 60 * 1000,
       path: "/",
     });
@@ -140,11 +186,14 @@ export const login = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    console.error("LOGIN CRASH:", error.message, error.stack);
+    console.error("LOGIN CRASH:", error.message);
     res.status(500).json({ message: "Server Error login failed", success: false });
   }
 };
 
+// ==========================================
+// LOGOUT ENDPOINT
+// ==========================================
 export const logout = async (req, res) => {
   try {
     res.clearCookie("token", {
@@ -164,6 +213,10 @@ export const logout = async (req, res) => {
     res.status(500).json({ message: "Server Error logging out", success: false });
   }
 };
+
+// ==========================================
+// RESUME PARSING & VECTOR VECTORIZATION ENDPOINT
+// ==========================================
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.id;
@@ -199,7 +252,6 @@ export const updateProfile = async (req, res) => {
       currentResumeText = await extractTextFromPDF(user.profile.resume);
     }
 
-    // Embeddings Generation
     const textToEmbed = `
       ${user.profile.bio || ""} 
       ${skillsArray.join(" ")} 
@@ -207,7 +259,6 @@ export const updateProfile = async (req, res) => {
     `.toLowerCase().trim();
 
     if (textToEmbed.length > 10) {
-      // Logic check: only update if generateFreeEmbeddings exists
       const newVector = await generateFreeEmbeddings(textToEmbed);
       if (newVector) {
         user.embeddings = newVector;
